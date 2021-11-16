@@ -79,6 +79,19 @@ message Message {
     uint64 commit = 8;
     Snapshot snapshot = 9;
     bool reject = 10;
+    AppendRejectHint hint = 11;
+}
+
+// MsgAppend Reject Hint, adapted from 6824
+message AppendRejectHint {
+    // log length
+    uint64 XLen = 1;
+    // term in the conflicting entry (if any)
+    uint64 XTerm = 2;
+    // index of first entry with that term (if any)
+    uint64 XIndex = 3;
+    // If true, XTerm and XIndex is valid
+    bool hasXTerm = 4;
 }
 
 // HardState contains the state of a node need to be peristed, including the current term, commit index 

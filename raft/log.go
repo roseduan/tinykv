@@ -192,10 +192,13 @@ func (l *RaftLog) AppendLogEntry(m pb.Message) {
 	}
 }
 
-func (l *RaftLog) CheckIndexAndTerm(m pb.Message) (bool, error) {
+func (l *RaftLog) CheckIndexAndTerm(m pb.Message) (*pb.AppendRejectHint, bool, error) {
 	// 检查索引号，索引号比目前日志的最大索引号还大直接返回
 	if m.Index > l.LastIndex() {
-		return true, nil
+		hint := &pb.AppendRejectHint{
+			XLen: l.LastIndex() + 1,
+		}
+		return hint, true, nil
 	}
 
 	prevLogTerm, err := l.Term(m.Index)
@@ -205,9 +208,23 @@ func (l *RaftLog) CheckIndexAndTerm(m pb.Message) (bool, error) {
 
 	// 检查任期号
 	if prevLogTerm != m.LogTerm {
-		return true, nil
+		first, last := l.firstLogIndex, l.LastIndex()
+		for ; first <= last; first++ {
+			if term, err := l.Term(first); err != nil {
+				panic(err)
+			} else if term == prevLogTerm {
+				break
+			}
+		}
+		hint := &pb.AppendRejectHint{
+			XLen:     l.LastIndex() + 1,
+			XTerm:    prevLogTerm,
+			XIndex:   first,
+			HasXTerm: true,
+		}
+		return hint, true, nil
 	}
-	return false, nil
+	return nil, false, nil
 }
 
 func (l *RaftLog) Entries(lo uint64, hi uint64) ([]*pb.Entry, error) {

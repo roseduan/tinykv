@@ -610,7 +610,6 @@ func (r *Raft) handleMsgRequestVoteResp(m pb.Message) {
 
 // handleAppendEntries handle MsgAppend RPC request.
 func (r *Raft) handleAppendEntries(m pb.Message) {
-	log.Infof("开始处理 MsgAppend 消息 : r.id = %d, m.from = %d, entries 数量 : %d\n", r.id, m.From, len(r.RaftLog.entries))
 	msg := &pb.Message{
 		MsgType: pb.MessageType_MsgAppendResponse,
 		From:    m.To,
@@ -621,7 +620,6 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 	defer func(msg *pb.Message) {
 		r.msgs = append(r.msgs, *msg)
-		log.Infof("节点发送在 append entries 中返回的消息是否是拒绝的 : %+v", msg.Reject)
 	}(msg)
 
 	// 任期比自己低的消息，直接拒绝
@@ -642,12 +640,13 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	r.electionElapsed = rand.Intn(r.electionTimeout/2) + 1
 
 	// 校验消息的Index和Term
-	if reject, err := r.RaftLog.CheckIndexAndTerm(m); err != nil {
+	if hint, reject, err := r.RaftLog.CheckIndexAndTerm(m); err != nil {
 		panic(err)
 	} else {
 		msg.Reject = reject
 		if reject {
 			msg.Commit = r.RaftLog.committed
+			msg.Hint = hint
 			return
 		}
 	}
@@ -666,9 +665,26 @@ func (r *Raft) handleMsgAppendResp(m pb.Message) {
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, None)
 		} else {
-			//todo
-			//r.Prs[m.From].Next = max(r.Prs[m.From].Next, m.Commit + 1)
-			//r.sendAppend(m.From)
+			if m.Hint.HasXTerm {
+				next := r.Prs[m.From].Next - 1
+				for ; next > r.RaftLog.firstLogIndex; next-- {
+					if term, err := r.RaftLog.Term(next); err != nil {
+						panic(err)
+					} else if term == m.Hint.XTerm {
+						break
+					}
+				}
+
+				if term, _ := r.RaftLog.Term(next); next != r.RaftLog.firstLogIndex && term == m.Hint.XTerm {
+					r.Prs[m.From].Next = next
+				} else {
+					r.Prs[m.From].Next = m.Hint.XIndex
+				}
+			} else {
+				r.Prs[m.From].Next = m.Hint.XLen
+			}
+			r.Prs[m.From].Next = max(r.Prs[m.From].Next, m.Commit+1)
+			r.sendAppend(m.From)
 			return
 		}
 	}

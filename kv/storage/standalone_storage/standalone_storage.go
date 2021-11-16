@@ -22,7 +22,7 @@ func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
 	options := badger.DefaultOptions
 	options.Dir = conf.DBPath
-	//options.ValueDir = conf.DBPath
+	options.ValueDir = conf.DBPath
 	return &StandAloneStorage{
 		options: options,
 	}

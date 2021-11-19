@@ -100,6 +100,20 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	first, err := l.storage.FirstIndex()
+	if err != nil {
+		panic(err.Error())
+	}
+	first -= 1
+	term, err := l.storage.Term(first)
+	if err != nil {
+		panic(err.Error())
+	}
+	if first > l.firstLogIndex {
+		l.entries = l.entries[first-l.firstLogIndex:]
+		l.firstLogIndex = first
+		l.firstLogTerm = term
+	}
 }
 
 // unstableEntries return all the unstable entries
@@ -241,4 +255,13 @@ func (l *RaftLog) Entries(lo uint64, hi uint64) ([]*pb.Entry, error) {
 		ret[i] = &ents[i]
 	}
 	return ret, nil
+}
+
+func (l *RaftLog) IsUpToDate(term, index uint64) bool {
+	lastLogTerm, err := l.Term(l.LastIndex())
+	if err != nil {
+		log.Debug("get last term err: ", err)
+		panic(err)
+	}
+	return term > lastLogTerm || (term == lastLogTerm && index >= l.LastIndex())
 }

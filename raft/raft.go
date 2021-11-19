@@ -208,6 +208,21 @@ func newRaft(c *Config) *Raft {
 	return raft
 }
 
+func (r *Raft) hardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}
+
+func (r *Raft) softState() *SoftState {
+	return &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
+}
+
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
@@ -559,12 +574,7 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 		msg.Term = r.Term
 	}
 
-	lastLogTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
-	if err != nil {
-		log.Debug("get last term err: ", err)
-		panic(err)
-	}
-	if !((m.LogTerm > lastLogTerm) || (m.LogTerm == lastLogTerm && m.Index >= r.RaftLog.LastIndex())) {
+	if !r.RaftLog.IsUpToDate(m.LogTerm, m.Index) {
 		return
 	}
 

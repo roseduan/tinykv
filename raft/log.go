@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -53,9 +54,9 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	// index at first log.
+	// index of first log.
 	firstLogIndex uint64
-	// term at first log.
+	// term of first log.
 	firstLogTerm uint64
 }
 
@@ -65,19 +66,16 @@ func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
 	firstIndex, err := storage.FirstIndex()
 	if err != nil {
-		log.Debug("get first index err: ", err)
-		panic(err)
+		panic(fmt.Sprintf("get first index err: %+v", err))
 	}
 	lastIndex, err := storage.LastIndex()
 	if err != nil {
-		log.Debug("get last index err: ", err)
-		panic(err)
+		panic(fmt.Sprintf("get last index err: %+v", err))
 	}
 
 	term, err := storage.Term(firstIndex - 1)
 	if err != nil {
-		log.Debug("get first index term err: ", err)
-		panic(err)
+		panic(fmt.Sprintf("get storage term err: %+v", err))
 	}
 
 	raftLog := &RaftLog{

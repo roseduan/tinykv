@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 	"sort"
@@ -172,8 +173,7 @@ func newRaft(c *Config) *Raft {
 
 	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
-		log.Debug("init state err: ", err)
-		panic(err)
+		panic(fmt.Sprintf("init state err: %+v", err))
 	}
 	if len(confState.Nodes) == 0 {
 		confState.Nodes = c.peers
@@ -188,7 +188,10 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick * 2,
 		electionElapsed:  rand.Intn(c.ElectionTick) + 1,
 		heartbeatTimeout: c.HeartbeatTick,
+		heartbeatElapsed: 0,
 	}
+
+	// 初始化日志复制进度
 	prs := make(map[uint64]*Progress)
 	for _, id := range confState.Nodes {
 		prs[id] = &Progress{}
@@ -360,10 +363,9 @@ func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	// 任期编号+1
 	r.Term++
-	// 表示已经给自己投过票了
+	// 推选自己为候选人, 并给自己投票
 	r.Vote = r.id
 	r.votes = make(map[uint64]bool)
-	// 推选自己为候选人
 	r.votes[r.id] = true
 
 	r.electionElapsed = rand.Intn(r.electionTimeout/2) + 1

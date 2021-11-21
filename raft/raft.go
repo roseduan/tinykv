@@ -230,9 +230,9 @@ func (r *Raft) softState() *SoftState {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	msg := pb.Message{}
+	var msg pb.Message
+	// 如果 Follower 节点的下一个需要发送的日志比leader的firstIndex还小，则直接发送快照信息
 	if r.Prs[to].Next <= r.RaftLog.firstLogIndex {
-		//	发送 Snapshot 消息
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			panic(err)

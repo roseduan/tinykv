@@ -331,6 +331,22 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
+	// raft wb 存储日志信息
+	raftWb := engine_util.WriteBatch{}
+	raftWb.Reset()
+
+	// save entries
+	if err := ps.Append(ready.Entries, &raftWb); err != nil {
+		log.Errorf("append ready log entries err.[%+v]", err)
+		return nil, err
+	}
+
+	// save hard state
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
+	raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 	return nil, nil
 }
 

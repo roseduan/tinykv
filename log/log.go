@@ -277,5 +277,6 @@ func NewLogger(w io.Writer, prefix string) *Logger {
 		level = LOG_LEVEL_INFO
 		//level = LOG_LEVEL_DEBUG
 	}
+	level = LOG_LEVEL_FATAL
 	return &Logger{_log: log.New(w, prefix, LstdFlags), level: level, highlighting: true}
 }

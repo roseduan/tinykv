@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -54,17 +55,34 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	if result != nil {
 		region := d.Region()
-		d.ctx.storeMeta.Lock()
-		d.ctx.storeMeta.regions[d.regionId] = region
-		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
-		d.ctx.storeMeta.Unlock()
-
+		d.updateSotreMeta(region)
 		d.peerCache = make(map[uint64]*metapb.Peer)
 		for _, pr := range region.Peers {
 			d.insertPeerCache(pr)
 		}
 	}
 
+	// 向其他节点发送已经 Ready 的消息
+	d.Send(d.ctx.trans, ready.Messages)
+
+	// 处理已经提交的日志，应用到状态机
+	d.handleCommittedEntries(&ready)
+}
+
+func (d *peerMsgHandler) updateSotreMeta(region *metapb.Region) {
+	d.ctx.storeMeta.Lock()
+	defer d.ctx.storeMeta.Unlock()
+	d.ctx.storeMeta.regions[d.regionId] = region
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+}
+
+func (d *peerMsgHandler) handleCommittedEntries(ready *raft.Ready) {
+	for _, ent := range ready.CommittedEntries {
+		d.peerStorage.applyState.AppliedIndex = ent.Index
+		if ent.Data == nil {
+			continue
+		}
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

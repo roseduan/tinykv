@@ -308,6 +308,29 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		return nil
+	}
+
+	firstIndex, err := ps.FirstIndex()
+	if err != nil {
+		panic(fmt.Sprintf("get peer first index err.[%+v]", err))
+	}
+
+	// no new entry.
+	if entries[0].Index+uint64(len(entries)-1) < firstIndex {
+		return nil
+	}
+	for _, ent := range entries {
+		raftLogKey := meta.RaftLogKey(ps.region.Id, ent.Index)
+		err := raftWB.SetMeta(raftLogKey, &ent)
+		if err != nil {
+			panic(fmt.Sprintf("set meta err.[%+v]", err))
+		}
+	}
+
+	ps.raftState.LastIndex = entries[len(entries)-1].Index
+	ps.raftState.LastTerm = entries[len(entries)-1].Term
 	return nil
 }
 
@@ -331,23 +354,40 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-
-	// raft wb 存储日志信息
-	raftWb := engine_util.WriteBatch{}
-	raftWb.Reset()
-
-	// save entries
-	if err := ps.Append(ready.Entries, &raftWb); err != nil {
-		log.Errorf("append ready log entries err.[%+v]", err)
+	var raftWB engine_util.WriteBatch
+	raftWB.Reset()
+	// save entries.
+	if err := ps.Append(ready.Entries, &raftWB); err != nil {
 		return nil, err
 	}
-
-	// save hard state
+	// update hard state.
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	return nil, nil
+	// save raft state.
+	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		return nil, err
+	}
+	// write batch data to badger.
+	raftWB.MustWriteToDB(ps.Engines.Raft)
+
+	// apply snapshot.
+	var kvWB engine_util.WriteBatch
+	kvWB.Reset()
+	var applyResult *ApplySnapResult
+	if len(ready.Snapshot.Data) != 0 && ready.Snapshot.Metadata != nil {
+		result, err := ps.ApplySnapshot(&ready.Snapshot, &kvWB, &raftWB)
+		if err != nil {
+			panic(fmt.Sprintf("apply snapshot err.[%+v]", err))
+		}
+		if result != nil {
+			applyResult = result
+			meta.WriteRegionState(&kvWB, ps.region, rspb.PeerState_Normal)
+		}
+	}
+	// write to badger
+	kvWB.MustWriteToDB(ps.Engines.Kv)
+	return applyResult, nil
 }
 
 func (ps *PeerStorage) ClearData() {

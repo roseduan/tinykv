@@ -43,6 +43,28 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	if !d.RaftGroup.HasReady() {
+		return
+	}
+
+	ready := d.RaftGroup.Ready()
+	result, err := d.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		log.Fatalf("save ready state err.[%+v]", err)
+	}
+	if result != nil {
+		region := d.Region()
+		d.ctx.storeMeta.Lock()
+		d.ctx.storeMeta.regions[d.regionId] = region
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+		d.ctx.storeMeta.Unlock()
+
+		d.peerCache = make(map[uint64]*metapb.Peer)
+		for _, pr := range region.Peers {
+			d.insertPeerCache(pr)
+		}
+	}
+
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -114,6 +136,15 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+
+	// 处理普通日志消息
+	buf, err := msg.Marshal()
+	if err != nil {
+		panic(fmt.Sprintf("raft msg marshal err.[%+v]", err))
+	}
+	if err = d.RaftGroup.Propose(buf); err != nil {
+		panic(fmt.Sprintf("raft proprose msg err.[%+v]", err))
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

@@ -2,6 +2,8 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/raft"
 	"time"
 
@@ -44,6 +46,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	// 没有 ready 的数据
 	if !d.RaftGroup.HasReady() {
 		return
 	}
@@ -67,6 +70,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 	// 处理已经提交的日志，应用到状态机
 	d.handleCommittedEntries(&ready)
+
+	d.peerStorage.saveApplyState()
+	// 告知 Ready 已经处理完毕
+	d.RaftGroup.Advance(ready)
 }
 
 func (d *peerMsgHandler) updateSotreMeta(region *metapb.Region) {
@@ -81,6 +88,23 @@ func (d *peerMsgHandler) handleCommittedEntries(ready *raft.Ready) {
 		d.peerStorage.applyState.AppliedIndex = ent.Index
 		if ent.Data == nil {
 			continue
+		}
+
+		var lastPro *proposal
+		for i, pro := range d.proposals {
+			if ent.Index == pro.index {
+				if pro.term < d.Term() {
+					pro.cb.Done(ErrRespStaleCommand(d.Term()))
+				} else {
+					lastPro = pro
+				}
+				d.proposals = d.proposals[i+1:]
+				break
+			}
+		}
+		switch ent.EntryType {
+		case eraftpb.EntryType_EntryNormal:
+			d.HandleNormalEntry(lastPro, ent)
 		}
 	}
 }
@@ -155,6 +179,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	// Your Code Here (2B).
 
+	// 记录消息的回调处理函数(在 HandleRaftReady 中进行处理)
+	d.proposals = append(d.proposals, &proposal{
+		index: d.nextProposalIndex(),
+		term:  d.Term(),
+		cb:    cb,
+	})
 	// 处理普通日志消息
 	buf, err := msg.Marshal()
 	if err != nil {
@@ -597,6 +627,98 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 			}
 			d.ctx.snapMgr.DeleteSnapshot(key, a, false)
 		}
+	}
+}
+
+func (d *peerMsgHandler) HandleNormalEntry(pro *proposal, ent eraftpb.Entry) {
+	resp := newCmdResp()
+	BindRespTerm(resp, d.Term())
+	req := new(raft_cmdpb.RaftCmdRequest)
+	if err := req.Unmarshal(ent.Data); err != nil {
+		log.Fatalf("req unmarshal err.[%+v]", err)
+	}
+
+	region := d.Region()
+	if err := util.CheckRegionEpoch(req, region, true); err != nil {
+		if pro != nil {
+			pro.cb.Done(ErrResp(err))
+		}
+		return
+	}
+
+	var needTxn bool
+	var kvwb engine_util.WriteBatch
+	for _, v := range req.Requests {
+		switch v.CmdType {
+		case raft_cmdpb.CmdType_Put:
+			if err := util.CheckKeyInRegion(v.Put.Key, d.Region()); err != nil {
+				if pro != nil {
+					pro.cb.Done(ErrResp(err))
+				}
+				return
+			}
+			kvwb.SetCF(v.Put.Cf, v.Put.Key, v.Put.Value)
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Put,
+				Put:     &raft_cmdpb.PutResponse{},
+			})
+		case raft_cmdpb.CmdType_Get:
+			if err := util.CheckKeyInRegion(v.Get.Key, d.Region()); err != nil {
+				if pro != nil {
+					pro.cb.Done(ErrResp(err))
+				}
+				return
+			}
+			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, v.Get.Cf, v.Get.Key)
+			if err != nil {
+				if pro != nil {
+					pro.cb.Done(ErrResp(err))
+				}
+				return
+			}
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Get,
+				Get:     &raft_cmdpb.GetResponse{Value: val},
+			})
+		case raft_cmdpb.CmdType_Delete:
+			if err := util.CheckKeyInRegion(v.Delete.Key, d.Region()); err != nil {
+				if pro != nil {
+					pro.cb.Done(ErrResp(err))
+				}
+				return
+			}
+			kvwb.DeleteCF(v.Delete.Cf, v.Delete.Key)
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Delete,
+				Delete:  &raft_cmdpb.DeleteResponse{},
+			})
+		case raft_cmdpb.CmdType_Snap:
+			if req.Header.RegionEpoch.Version != d.Region().RegionEpoch.Version {
+				if pro != nil {
+					pro.cb.Done(ErrResp(&util.ErrEpochNotMatch{}))
+				}
+				return
+			}
+			needTxn = true
+			resp.Responses = append(resp.Responses, &raft_cmdpb.Response{
+				CmdType: raft_cmdpb.CmdType_Snap,
+				Snap:    &raft_cmdpb.SnapResponse{Region: d.Region()},
+			})
+		}
+	}
+
+	// 持久化
+	if err := kvwb.WriteToDB(d.peerStorage.Engines.Kv); err != nil {
+		if pro != nil {
+			pro.cb.Done(ErrResp(err))
+		}
+		return
+	}
+	if needTxn && pro != nil {
+		pro.cb.Txn = d.peerStorage.Engines.Kv.NewTransaction(false)
+	}
+	if pro != nil {
+		pro.cb.Done(resp)
 	}
 }
 

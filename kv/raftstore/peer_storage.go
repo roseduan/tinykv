@@ -354,24 +354,25 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
 	var raftWB engine_util.WriteBatch
 	raftWB.Reset()
-	// save entries.
+	// 保存日志条目
 	if err := ps.Append(ready.Entries, &raftWB); err != nil {
 		return nil, err
 	}
-	// update hard state.
+	// 更新hard state
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	// save raft state.
+	// 保存raft状态
 	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		return nil, err
 	}
 	// write batch data to badger.
 	raftWB.MustWriteToDB(ps.Engines.Raft)
 
-	// apply snapshot.
+	// 应用快照信息
 	var kvWB engine_util.WriteBatch
 	kvWB.Reset()
 	var applyResult *ApplySnapResult
@@ -399,5 +400,16 @@ func (ps *PeerStorage) clearRange(regionID uint64, start, end []byte) {
 		RegionId: regionID,
 		StartKey: start,
 		EndKey:   end,
+	}
+}
+
+func (ps *PeerStorage) saveApplyState() {
+	var kvwb engine_util.WriteBatch
+	err := kvwb.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	if err != nil {
+		log.Fatalf("set meta err.[%+v]", err)
+	}
+	if err := kvwb.WriteToDB(ps.Engines.Kv); err != nil {
+		log.Fatalf("write meta err.[%+v]", err)
 	}
 }

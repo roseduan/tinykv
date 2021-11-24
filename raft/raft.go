@@ -192,21 +192,17 @@ func newRaft(c *Config) *Raft {
 	}
 
 	// 初始化日志复制进度
-	prs := make(map[uint64]*Progress)
-	for _, id := range confState.Nodes {
-		prs[id] = &Progress{}
-	}
-	raft.Prs = prs
+	raft.initProgress(confState.Nodes)
 
 	// raft log
 	raftLog := newLog(c.Storage)
 	raftLog.committed = hardState.Commit
+	raftLog.applied = raftLog.firstLogIndex
 	if c.Applied != 0 {
 		raftLog.applied = c.Applied
-	} else {
-		raftLog.applied = raftLog.firstLogIndex
 	}
 	raft.RaftLog = raftLog
+
 	//ret.updatePengingConfIdx() todo
 	return raft
 }
@@ -224,6 +220,14 @@ func (r *Raft) softState() *SoftState {
 		Lead:      r.Lead,
 		RaftState: r.State,
 	}
+}
+
+func (r *Raft) initProgress(peers []uint64) {
+	prs := make(map[uint64]*Progress)
+	for _, id := range peers {
+		prs[id] = &Progress{}
+	}
+	r.Prs = prs
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -280,10 +284,10 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		Term:    r.Term,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Debug("[%d]send heartbeat msg to [%d] at term [%d]", r.id, to, r.Term)
 }
 
 func (r *Raft) sendRequestVote(id uint64) {
+	// 需要将节点最新的 Index 和 Term 发送过去，方便 Follower 进行判断
 	lastLogTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
 	if err != nil {
 		log.Error("get log term err: ", err)
@@ -299,7 +303,6 @@ func (r *Raft) sendRequestVote(id uint64) {
 		LogTerm: lastLogTerm,
 	}
 	r.msgs = append(r.msgs, msg)
-	log.Debugf("[%d]send request vote msg to [%d] at term [%d]", r.id, id, r.Term)
 }
 
 // 广播心跳消息
@@ -325,24 +328,34 @@ func (r *Raft) tick() {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateLeader:
-		r.heartbeatElapsed++
-		if r.leadTransferee != None {
-			r.electionElapsed++
-			if r.electionElapsed >= r.electionTimeout {
-				r.leadTransferee = None
-				r.electionElapsed = 0
-			}
-		}
-		if r.heartbeatElapsed >= r.heartbeatTimeout {
-			r.heartbeatElapsed = 0
-			r.broadHeartbeat()
-		}
+		r.tickLeader()
 	case StateFollower, StateCandidate:
+		r.tickNonLeader()
+	}
+}
+
+func (r *Raft) tickLeader() {
+	r.heartbeatElapsed++
+	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		r.heartbeatElapsed = 0
+		// 发送心跳信息
+		r.broadHeartbeat()
+	}
+
+	if r.leadTransferee != None {
 		r.electionElapsed++
 		if r.electionElapsed >= r.electionTimeout {
-			// 发起新的选举
-			r.startElection()
+			r.leadTransferee = None
+			r.electionElapsed = 0
 		}
+	}
+}
+
+func (r *Raft) tickNonLeader() {
+	r.electionElapsed++
+	if r.electionElapsed >= r.electionTimeout {
+		// 发起新的选举
+		r.startElection()
 	}
 }
 
@@ -501,13 +514,13 @@ func (r *Raft) startElection() {
 	r.becomeCandidate()
 
 	//	计算投票是否已经满足
-	var votes int
+	var votesApprove int
 	for _, ok := range r.votes {
 		if ok {
-			votes++
+			votesApprove++
 		}
 	}
-	if votes*2 > len(r.Prs) && len(r.Prs) > 0 {
+	if votesApprove*2 > len(r.Prs) && len(r.Prs) > 0 {
 		// 竞选成功
 		r.becomeLeader()
 		return
@@ -584,7 +597,6 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 		r.Vote = m.From
 		msg.Reject = false
 		r.electionElapsed = rand.Intn(r.electionTimeout/2) + 1
-		log.Debugf("[%d]send vote to [%d] at term [%d]", r.id, m.From, r.Term)
 	}
 }
 

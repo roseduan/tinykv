@@ -449,6 +449,8 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleMsgRequestVote(m)
 	case pb.MessageType_MsgAppend:
 		r.handleAppendEntries(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
@@ -472,6 +474,8 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleMsgRequestVoteResp(m)
+	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
 	default:
@@ -589,6 +593,7 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 		msg.Term = r.Term
 	}
 
+	// 判断日志是否是最新的
 	if !r.RaftLog.IsUpToDate(m.LogTerm, m.Index) {
 		return
 	}
@@ -653,7 +658,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 
 	// 如果收到了Term比自己高的消息
-	// 或者当前是候选者，但是 Term 一样，那么节点变为 Follower
+	// 或者当前是候选者，但是 Term 一样，那么节点需要变更自己的状态
 	if m.Term > r.Term || (m.Term == r.Term && r.State == StateCandidate) {
 		r.becomeFollower(m.Term, m.From)
 	}
@@ -675,9 +680,10 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		}
 	}
 
-	// 添加数据
+	// 添加日志
 	r.RaftLog.AppendLogEntry(m)
 
+	// 更新committed字段信息
 	newCommitted := min(m.Commit, msg.Index)
 	if newCommitted > r.RaftLog.committed {
 		r.RaftLog.committed = newCommitted
@@ -760,6 +766,37 @@ func (r *Raft) handleMsgHeartbeatResp(m pb.Message) {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	msg := &pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    m.To,
+		To:      m.From,
+		Term:    r.Term,
+		Reject:  true,
+		Index:   m.Snapshot.Metadata.Index,
+	}
+	defer func(m *pb.Message) {
+		r.msgs = append(r.msgs, *msg)
+	}(msg)
+
+	// 判断任期号
+	if m.Term < r.Term {
+		return
+	}
+	if m.Term > r.Term || (m.Term == r.Term && r.State == StateCandidate) {
+		r.becomeFollower(m.Term, m.From)
+	}
+
+	// 重置状态
+	msg.Term = r.Term
+	r.Lead = m.From
+	r.electionElapsed = rand.Intn(r.electionTimeout/2) + 1
+
+	r.RaftLog.AddSnapshot(m.Snapshot)
+
+	// 更新节点数
+	for _, n := range m.Snapshot.Metadata.ConfState.Nodes {
+		r.Prs[n] = &Progress{}
+	}
 }
 
 // addNode add a new node to raft group

@@ -263,3 +263,10 @@ func (l *RaftLog) IsUpToDate(term, index uint64) bool {
 	}
 	return term > lastLogTerm || (term == lastLogTerm && index >= l.LastIndex())
 }
+
+func (l *RaftLog) AddSnapshot(sh *pb.Snapshot) {
+	if l.pendingSnapshot != nil || sh == nil {
+		return
+	}
+
+}

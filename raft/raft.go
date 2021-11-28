@@ -196,8 +196,9 @@ func newRaft(c *Config) *Raft {
 
 	// raft log
 	raftLog := newLog(c.Storage)
-	raftLog.committed = hardState.Commit
-	raftLog.applied = raftLog.firstLogIndex
+	if hardState.Commit != 0 {
+		raftLog.committed = hardState.Commit
+	}
 	if c.Applied != 0 {
 		raftLog.applied = c.Applied
 	}
@@ -403,7 +404,7 @@ func (r *Raft) becomeLeader() {
 			Next:  r.RaftLog.LastIndex() + 1,
 		}
 	}
-	// 更改 leader 的 match 字段
+	// leader 自身的 match 是确定的
 	r.Prs[r.id].Match = r.Prs[r.id].Next - 1
 
 	// 竞选成功之后发送一个空的消息
@@ -696,15 +697,7 @@ func (r *Raft) handleMsgAppendResp(m pb.Message) {
 			r.becomeFollower(m.Term, None)
 		} else {
 			if m.Hint.HasXTerm {
-				next := r.Prs[m.From].Next - 1
-				for ; next > r.RaftLog.firstLogIndex; next-- {
-					if term, err := r.RaftLog.Term(next); err != nil {
-						panic(err)
-					} else if term == m.Hint.XTerm {
-						break
-					}
-				}
-
+				next := r.findConflict(m)
 				if term, _ := r.RaftLog.Term(next); next != r.RaftLog.firstLogIndex && term == m.Hint.XTerm {
 					r.Prs[m.From].Next = next
 				} else {
@@ -729,6 +722,18 @@ func (r *Raft) handleMsgAppendResp(m pb.Message) {
 		}
 		r.updateLogCommitted()
 	}
+}
+
+func (r *Raft) findConflict(m pb.Message) uint64 {
+	next := r.Prs[m.From].Next - 1
+	for ; next > r.RaftLog.firstLogIndex; next-- {
+		if term, err := r.RaftLog.Term(next); err != nil {
+			panic(err)
+		} else if term == m.Hint.XTerm {
+			break
+		}
+	}
+	return next
 }
 
 func (r *Raft) handleMsgHeartbeat(m pb.Message) {

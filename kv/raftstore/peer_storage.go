@@ -355,10 +355,10 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
 
-	var raftWB engine_util.WriteBatch
-	raftWB.Reset()
+	var raftwb engine_util.WriteBatch
+	raftwb.Reset()
 	// 保存日志条目
-	if err := ps.Append(ready.Entries, &raftWB); err != nil {
+	if err := ps.Append(ready.Entries, &raftwb); err != nil {
 		return nil, err
 	}
 	// 更新hard state
@@ -366,28 +366,28 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 		ps.raftState.HardState = &ready.HardState
 	}
 	// 保存raft状态
-	if err := raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+	if err := raftwb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
 		return nil, err
 	}
-	// write batch data to badger.
-	raftWB.MustWriteToDB(ps.Engines.Raft)
+	// 持久化
+	raftwb.MustWriteToDB(ps.Engines.Raft)
 
 	// 应用快照信息
-	var kvWB engine_util.WriteBatch
-	kvWB.Reset()
+	var kvwb engine_util.WriteBatch
+	kvwb.Reset()
 	var applyResult *ApplySnapResult
 	if len(ready.Snapshot.Data) != 0 && ready.Snapshot.Metadata != nil {
-		result, err := ps.ApplySnapshot(&ready.Snapshot, &kvWB, &raftWB)
+		result, err := ps.ApplySnapshot(&ready.Snapshot, &kvwb, &raftwb)
 		if err != nil {
 			panic(fmt.Sprintf("apply snapshot err.[%+v]", err))
 		}
 		if result != nil {
 			applyResult = result
-			meta.WriteRegionState(&kvWB, ps.region, rspb.PeerState_Normal)
+			meta.WriteRegionState(&kvwb, ps.region, rspb.PeerState_Normal)
 		}
 	}
-	// write to badger
-	kvWB.MustWriteToDB(ps.Engines.Kv)
+	// 持久化
+	kvwb.MustWriteToDB(ps.Engines.Kv)
 	return applyResult, nil
 }
 

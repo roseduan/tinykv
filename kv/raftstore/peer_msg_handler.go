@@ -52,6 +52,8 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 
 	ready := d.RaftGroup.Ready()
+
+	// 保存已经 Ready 的数据
 	result, err := d.peerStorage.SaveReadyState(&ready)
 	if err != nil {
 		log.Fatalf("save ready state err.[%+v]", err)
@@ -71,7 +73,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// 处理已经提交的日志，应用到状态机
 	d.handleCommittedEntries(&ready)
 
+	// 保存applyState状态
 	d.peerStorage.saveApplyState()
+
 	// 告知 Ready 已经处理完毕
 	d.RaftGroup.Advance(ready)
 }
@@ -90,23 +94,28 @@ func (d *peerMsgHandler) handleCommittedEntries(ready *raft.Ready) {
 			continue
 		}
 
-		var lastPro *proposal
-		for i, pro := range d.proposals {
-			if ent.Index == pro.index {
-				if pro.term < d.Term() {
-					pro.cb.Done(ErrRespStaleCommand(d.Term()))
-				} else {
-					lastPro = pro
-				}
-				d.proposals = d.proposals[i+1:]
-				break
-			}
-		}
+		lastPro := d.findLastPro(&ent)
 		switch ent.EntryType {
 		case eraftpb.EntryType_EntryNormal:
-			d.HandleNormalEntry(lastPro, ent)
+			d.handleNormalEntry(lastPro, ent)
 		}
 	}
+}
+
+func (d *peerMsgHandler) findLastPro(ent *eraftpb.Entry) *proposal {
+	var lastPro *proposal
+	for i, pro := range d.proposals {
+		if ent.Index == pro.index {
+			if pro.term < d.Term() {
+				pro.cb.Done(ErrRespStaleCommand(d.Term()))
+			} else {
+				lastPro = pro
+			}
+			d.proposals = d.proposals[i+1:]
+			break
+		}
+	}
+	return lastPro
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -630,7 +639,7 @@ func (d *peerMsgHandler) onGCSnap(snaps []snap.SnapKeyWithSending) {
 	}
 }
 
-func (d *peerMsgHandler) HandleNormalEntry(pro *proposal, ent eraftpb.Entry) {
+func (d *peerMsgHandler) handleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 	resp := newCmdResp()
 	BindRespTerm(resp, d.Term())
 	req := new(raft_cmdpb.RaftCmdRequest)
@@ -648,13 +657,18 @@ func (d *peerMsgHandler) HandleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 
 	var needTxn bool
 	var kvwb engine_util.WriteBatch
+	checkInRegion := func(key []byte) (err error) {
+		if err = util.CheckKeyInRegion(key, d.Region()); err != nil {
+			if pro != nil {
+				pro.cb.Done(ErrResp(err))
+			}
+		}
+		return
+	}
 	for _, v := range req.Requests {
 		switch v.CmdType {
 		case raft_cmdpb.CmdType_Put:
-			if err := util.CheckKeyInRegion(v.Put.Key, d.Region()); err != nil {
-				if pro != nil {
-					pro.cb.Done(ErrResp(err))
-				}
+			if err := checkInRegion(v.Put.Key); err != nil {
 				return
 			}
 			kvwb.SetCF(v.Put.Cf, v.Put.Key, v.Put.Value)
@@ -663,10 +677,7 @@ func (d *peerMsgHandler) HandleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 				Put:     &raft_cmdpb.PutResponse{},
 			})
 		case raft_cmdpb.CmdType_Get:
-			if err := util.CheckKeyInRegion(v.Get.Key, d.Region()); err != nil {
-				if pro != nil {
-					pro.cb.Done(ErrResp(err))
-				}
+			if err := checkInRegion(v.Get.Key); err != nil {
 				return
 			}
 			val, err := engine_util.GetCF(d.peerStorage.Engines.Kv, v.Get.Cf, v.Get.Key)
@@ -681,10 +692,7 @@ func (d *peerMsgHandler) HandleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 				Get:     &raft_cmdpb.GetResponse{Value: val},
 			})
 		case raft_cmdpb.CmdType_Delete:
-			if err := util.CheckKeyInRegion(v.Delete.Key, d.Region()); err != nil {
-				if pro != nil {
-					pro.cb.Done(ErrResp(err))
-				}
+			if err := checkInRegion(v.Delete.Key); err != nil {
 				return
 			}
 			kvwb.DeleteCF(v.Delete.Cf, v.Delete.Key)

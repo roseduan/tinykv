@@ -83,6 +83,8 @@ func newLog(storage Storage) *RaftLog {
 		firstLogIndex: firstIndex - 1,
 		firstLogTerm:  term,
 		stabled:       lastIndex,
+		committed:     firstIndex - 1,
+		applied:       firstIndex - 1,
 	}
 
 	entries, err := storage.Entries(firstIndex, lastIndex+1)
@@ -102,7 +104,8 @@ func (l *RaftLog) maybeCompact() {
 	if err != nil {
 		panic(err.Error())
 	}
-	first -= 1
+	first--
+
 	term, err := l.storage.Term(first)
 	if err != nil {
 		panic(err.Error())
@@ -206,6 +209,7 @@ func (l *RaftLog) AppendLogEntry(m pb.Message) {
 
 func (l *RaftLog) CheckIndexAndTerm(m pb.Message) (*pb.AppendRejectHint, bool, error) {
 	// 检查索引号，索引号比目前日志的最大索引号还大直接返回
+	// 并携带自己的最大日志索引号
 	if m.Index > l.LastIndex() {
 		hint := &pb.AppendRejectHint{
 			XLen: l.LastIndex() + 1,
@@ -269,4 +273,43 @@ func (l *RaftLog) AddSnapshot(sh *pb.Snapshot) {
 		return
 	}
 
+	meta := sh.Metadata
+	if meta.Index <= l.committed {
+		return
+	}
+	if l.pendingSnapshot == nil || meta.Index > l.pendingSnapshot.Metadata.Index {
+		l.pendingSnapshot = sh
+	}
+	l.committed = meta.Index
+	l.applied = meta.Index
+	l.stabled = meta.Index
+
+	if len(l.entries) > 0 {
+		if meta.Index >= l.entries[0].Index && meta.Index <= l.LastIndex() {
+			if logTerm, err := l.Term(meta.Index); err != nil {
+				log.Fatalf("get term err.[%+v]", err)
+			} else if meta.Term == logTerm {
+				offset := meta.Index - l.entries[0].Index
+				l.entries = l.entries[offset+1:]
+			}
+		} else {
+			l.entries = l.entries[:0]
+		}
+	}
+
+	l.firstLogIndex = meta.Index
+	l.firstLogTerm = meta.Term
+}
+
+func (l *RaftLog) advance(rd *Ready) {
+	if len(rd.Entries) != 0 && l.stabled < rd.Entries[len(rd.Entries)-1].Index {
+		l.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
+
+	committedLen := len(rd.CommittedEntries)
+	if committedLen != 0 && l.applied < rd.CommittedEntries[committedLen-1].Index {
+		l.applied = rd.CommittedEntries[committedLen-1].Index
+	}
+	l.pendingSnapshot = nil
+	l.maybeCompact()
 }

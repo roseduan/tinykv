@@ -201,26 +201,8 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
-	if rd.Term > rn.prevHardState.Term {
-		rn.prevHardState.Term = rd.Term
-		rn.prevHardState.Vote = rd.Vote
-	}
-	if rd.Commit > rn.prevHardState.Commit {
-		rn.prevHardState.Commit = rd.Commit
-	}
-
-	if rd.SoftState != nil {
-		rn.prevSoftState = rd.SoftState
-	}
-
-	if len(rd.Entries) != 0 && rn.Raft.RaftLog.stabled < rd.Entries[len(rd.Entries)-1].Index {
-		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
-	}
-	if len(rd.CommittedEntries) != 0 && rn.Raft.RaftLog.applied < rd.CommittedEntries[len(rd.CommittedEntries)-1].Index {
-		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
-	}
-	rn.Raft.RaftLog.pendingSnapshot = nil
-	rn.Raft.RaftLog.maybeCompact()
+	rn.resetState(&rd)
+	rn.Raft.RaftLog.advance(&rd)
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -250,4 +232,19 @@ func (st *SoftState) equal(target *SoftState) bool {
 
 func hardStateEqual(a, b pb.HardState) bool {
 	return a.Term == b.Term && a.Vote == b.Vote && a.Commit == b.Commit
+}
+
+func (rn *RawNode) resetState(rd *Ready) {
+	if rd.Term > rn.prevHardState.Term {
+		rn.prevHardState.Term = rd.Term
+		rn.prevHardState.Vote = rd.Vote
+	}
+
+	if rd.Commit > rn.prevHardState.Commit {
+		rn.prevHardState.Commit = rd.Commit
+	}
+
+	if rd.SoftState != nil {
+		rn.prevSoftState = rd.SoftState
+	}
 }

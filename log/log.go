@@ -73,11 +73,11 @@ func SetFlags(flags int) {
 }
 
 func Info(v ...interface{}) {
-	_log.Info(v...)
+	//_log.Info(v...)
 }
 
 func Infof(format string, v ...interface{}) {
-	_log.Infof(format, v...)
+	//_log.Infof(format, v...)
 }
 
 func Panic(v ...interface{}) {
@@ -97,11 +97,11 @@ func Debugf(format string, v ...interface{}) {
 }
 
 func Warn(v ...interface{}) {
-	_log.Warning(v...)
+	//_log.Warning(v...)
 }
 
 func Warnf(format string, v ...interface{}) {
-	_log.Warningf(format, v...)
+	//_log.Warningf(format, v...)
 }
 
 func Warning(v ...interface{}) {

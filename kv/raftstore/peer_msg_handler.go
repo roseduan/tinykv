@@ -655,6 +655,10 @@ func (d *peerMsgHandler) handleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 		return
 	}
 
+	if req.AdminRequest != nil {
+		d.handleAdminRequest(resp, req.AdminRequest)
+	}
+
 	var needTxn bool
 	var kvwb engine_util.WriteBatch
 	checkInRegion := func(key []byte) (err error) {
@@ -727,6 +731,32 @@ func (d *peerMsgHandler) handleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 	}
 	if pro != nil {
 		pro.cb.Done(resp)
+	}
+}
+
+func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, adminRequest *raft_cmdpb.AdminRequest) {
+	resp.AdminResponse = &raft_cmdpb.AdminResponse{
+		CmdType: adminRequest.CmdType,
+	}
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		appliedIndex := d.peerStorage.applyState.AppliedIndex
+		if appliedIndex < adminRequest.CompactLog.CompactIndex {
+			term, err := d.RaftGroup.Raft.RaftLog.Term(appliedIndex)
+			if err != nil {
+				panic(err)
+			}
+			adminRequest.CompactLog.CompactIndex = appliedIndex
+			adminRequest.CompactLog.CompactTerm = term
+		}
+		resp.AdminResponse.CompactLog = &raft_cmdpb.CompactLogResponse{}
+		if d.peerStorage.applyState.TruncatedState.Index < adminRequest.CompactLog.CompactIndex {
+			d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
+				Index: adminRequest.CompactLog.CompactIndex,
+				Term:  adminRequest.CompactLog.CompactTerm,
+			}
+			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
+		}
 	}
 }
 

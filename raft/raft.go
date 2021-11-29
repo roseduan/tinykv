@@ -806,6 +806,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	for _, n := range m.Snapshot.Metadata.ConfState.Nodes {
 		r.Prs[n] = &Progress{}
 	}
+	msg.Reject = false
 }
 
 // addNode add a new node to raft group

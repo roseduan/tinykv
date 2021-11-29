@@ -105,11 +105,11 @@ func Warnf(format string, v ...interface{}) {
 }
 
 func Warning(v ...interface{}) {
-	_log.Warning(v...)
+	//_log.Warning(v...)
 }
 
 func Warningf(format string, v ...interface{}) {
-	_log.Warningf(format, v...)
+	//_log.Warningf(format, v...)
 }
 
 func Error(v ...interface{}) {

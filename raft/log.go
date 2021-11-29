@@ -269,10 +269,6 @@ func (l *RaftLog) IsUpToDate(term, index uint64) bool {
 }
 
 func (l *RaftLog) AddSnapshot(sh *pb.Snapshot) {
-	if l.pendingSnapshot != nil || sh == nil {
-		return
-	}
-
 	meta := sh.Metadata
 	if meta.Index <= l.committed {
 		return

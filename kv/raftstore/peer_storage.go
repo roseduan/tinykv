@@ -346,12 +346,10 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	// 应用快照到节点中
 	if !ps.validateSnap(snapshot) {
-		return nil, errors.New("snapshot is invalid.")
+		return nil, errors.New("Invalidate Snapshot")
 	}
-
-	res := &ApplySnapResult{
+	ret := &ApplySnapResult{
 		PrevRegion: ps.region,
 		Region:     snapData.Region,
 	}
@@ -369,7 +367,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	}
 
 	done := make(chan bool)
-	ps.regionSched <- runner.RegionTaskApply{
+	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: snapData.Region.Id,
 		Notifier: done,
 		SnapMeta: snapshot.Metadata,
@@ -382,7 +380,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	ps.region = snapData.Region
 	_ = kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 	ps.clearExtraData(ps.region)
-	return res, nil
+	return ret, nil
 }
 
 // Save memory states to disk.

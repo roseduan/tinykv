@@ -240,6 +240,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if r.Prs[to].Next <= r.RaftLog.firstLogIndex {
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Warnf("snapshot is not available")
+				return true
+			}
 			panic(err)
 		}
 		msg = pb.Message{
@@ -272,7 +276,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		}
 	}
 	r.msgs = append(r.msgs, msg)
-	return false
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.

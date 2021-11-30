@@ -217,11 +217,7 @@ func (l *RaftLog) CheckIndexAndTerm(m pb.Message) (*pb.AppendRejectHint, bool, e
 		return hint, true, nil
 	}
 
-	prevLogTerm, err := l.Term(m.Index)
-	if err != nil && err != ErrUnavailable {
-		panic(err)
-	}
-
+	prevLogTerm, _ := l.Term(m.Index)
 	// 检查任期号
 	if prevLogTerm != m.LogTerm {
 		first, last := l.firstLogIndex, l.LastIndex()

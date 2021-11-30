@@ -310,6 +310,16 @@ func (r *Raft) sendRequestVote(id uint64) {
 	r.msgs = append(r.msgs, msg)
 }
 
+func (r *Raft) sendTimeoutNow(to uint64) {
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+	}
+	r.msgs = append(r.msgs, msg)
+}
+
 // 广播心跳消息
 func (r *Raft) broadHeartbeat() {
 	for id := range r.Prs {
@@ -456,9 +466,12 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow()
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgTransferLeader:
 	default:
 		log.Errorf("unknown message type %+v", m.MsgType.String())
 	}
@@ -481,8 +494,11 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleMsgRequestVoteResp(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
+	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow()
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
+	case pb.MessageType_MsgTransferLeader:
 	default:
 		log.Errorf("unknown message type %+v", m.MsgType.String())
 	}
@@ -506,6 +522,9 @@ func (r *Raft) stepLeader(m pb.Message) error {
 		r.handleMsgAppendResp(m)
 	case pb.MessageType_MsgPropose:
 		r.handleMsgPropose(m)
+	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
+	case pb.MessageType_MsgTimeoutNow:
 	case pb.MessageType_MsgRequestVoteResponse:
 	default:
 		log.Errorf("unknown message type %+v", m.MsgType.String())
@@ -845,5 +864,41 @@ func (r *Raft) updateLogCommitted() {
 	} else if term == r.Term {
 		r.RaftLog.committed = newCommitted
 		r.broadAppend()
+	}
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	pr := r.Prs[m.From]
+	if pr == nil {
+		log.Debugf("progress is nil.id: %d", m.From)
+		return
+	}
+	// 已经有正在进行中的leader迁移了
+	if r.leadTransferee != 0 && r.leadTransferee == m.From {
+		return
+	}
+	r.abortLeaderTransfer()
+
+	if m.From == r.id {
+		return
+	}
+
+	r.electionElapsed = rand.Intn(r.electionTimeout/2) + 1
+	r.leadTransferee = m.From
+	// 如果日志是最新的，则发起leader切换
+	if pr.Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNow(r.leadTransferee)
+	} else { // 否则同步日志
+		r.sendAppend(r.leadTransferee)
+	}
+}
+
+func (r *Raft) abortLeaderTransfer() {
+	r.leadTransferee = None
+}
+
+func (r *Raft) handleTimeoutNow() {
+	if _, ok := r.Prs[r.id]; ok {
+		r.startElection()
 	}
 }

@@ -399,12 +399,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	// 保存raft状态
-	if err := raftwb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
-		return nil, err
-	}
-	// 持久化
-	raftwb.MustWriteToDB(ps.Engines.Raft)
 
 	// 应用快照信息
 	var kvwb engine_util.WriteBatch
@@ -420,7 +414,13 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 			meta.WriteRegionState(&kvwb, ps.region, rspb.PeerState_Normal)
 		}
 	}
+
+	// 保存raft状态
+	if err := raftwb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		return nil, err
+	}
 	// 持久化
+	raftwb.MustWriteToDB(ps.Engines.Raft)
 	kvwb.MustWriteToDB(ps.Engines.Kv)
 	return applyResult, nil
 }

@@ -98,6 +98,10 @@ func (d *peerMsgHandler) handleCommittedEntries(ready *raft.Ready) {
 		switch ent.EntryType {
 		case eraftpb.EntryType_EntryNormal:
 			d.handleNormalEntry(lastPro, ent)
+		case eraftpb.EntryType_EntryConfChange:
+			d.handleConfChangeEntry(lastPro, ent)
+		default:
+			panic("unknown entry type")
 		}
 	}
 }
@@ -758,6 +762,17 @@ func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, ad
 			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
 		}
 	}
+}
+
+func (d *peerMsgHandler) handleConfChangeEntry(pro *proposal, ent eraftpb.Entry) {
+	resp := newCmdResp()
+	BindRespTerm(resp, d.Term())
+
+	req := new(eraftpb.ConfChange)
+	if err := req.Unmarshal(ent.Data); err != nil {
+		
+	}
+	//d.RaftGroup.ApplyConfChange()
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {

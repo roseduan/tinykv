@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"sort"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -304,4 +305,22 @@ func (l *RaftLog) advance(rd *Ready) {
 	}
 	l.pendingSnapshot = nil
 	l.maybeCompact()
+}
+
+func (l *RaftLog) updateCommitted(matches []uint64, prLen int, rTerm uint64) (updated bool) {
+	sort.Sort(uint64Slice(matches))
+	newCommitted := matches[prLen/2]
+	if prLen%2 == 0 {
+		newCommitted = matches[prLen/2-1]
+	}
+
+	if newCommitted > l.committed {
+		if term, err := l.Term(newCommitted); err != nil {
+			panic(err)
+		} else if term == rTerm {
+			l.committed = newCommitted
+			updated = true
+		}
+	}
+	return
 }

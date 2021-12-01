@@ -468,10 +468,11 @@ func (r *Raft) stepFollower(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgTimeoutNow:
 		r.handleTimeoutNow()
+	case pb.MessageType_MsgTransferLeader:
+		r.sendTransferLeader()
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
-	case pb.MessageType_MsgTransferLeader:
 	default:
 		log.Errorf("unknown message type %+v", m.MsgType.String())
 	}
@@ -496,9 +497,10 @@ func (r *Raft) stepCandidate(m pb.Message) error {
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgTimeoutNow:
 		r.handleTimeoutNow()
+	case pb.MessageType_MsgTransferLeader:
+		r.sendTransferLeader()
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgPropose:
-	case pb.MessageType_MsgTransferLeader:
 	default:
 		log.Errorf("unknown message type %+v", m.MsgType.String())
 	}
@@ -741,7 +743,8 @@ func (r *Raft) handleMsgAppendResp(m pb.Message) {
 			r.Prs[m.From].Next = m.Index + 1
 		}
 		if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
-			// todo
+			// leader 切换完成
+			r.sendTimeoutNow(m.From)
 		}
 		r.updateLogCommitted()
 	}
@@ -831,11 +834,26 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		return
+	}
+	r.Prs[id] = &Progress{
+		Match: 0,
+		Next:  r.RaftLog.LastIndex() + 1,
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; !ok {
+		return
+	}
+	delete(r.Prs, id)
+	delete(r.votes, id)
+	if r.id != id && r.State == StateLeader {
+		r.updateLogCommitted()
+	}
 }
 
 // updateLogCommitted update leader`s log committed.
@@ -901,4 +919,18 @@ func (r *Raft) handleTimeoutNow() {
 	if _, ok := r.Prs[r.id]; ok {
 		r.startElection()
 	}
+}
+
+func (r *Raft) sendTransferLeader() {
+	if r.Lead == None {
+		log.Warnf("leader is unknown")
+		return
+	}
+
+	msg := pb.Message{
+		MsgType: pb.MessageType_MsgTransferLeader,
+		From:    r.id,
+		To:      r.Lead,
+	}
+	r.msgs = append(r.msgs, msg)
 }

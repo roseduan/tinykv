@@ -923,7 +923,7 @@ func (r *Raft) handleTimeoutNow() {
 
 func (r *Raft) sendTransferLeader() {
 	if r.Lead == None {
-		log.Warnf("leader is unknown")
+		log.Warnf("leader is unknown, not send transfer leader msg.")
 		return
 	}
 

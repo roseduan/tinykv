@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
-	"sort"
 	"time"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -241,7 +240,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			if err == ErrSnapshotTemporarilyUnavailable {
-				log.Warnf("snapshot is not available")
+				log.Debug("snapshot is not available")
 				return true
 			}
 			panic(err)
@@ -743,7 +742,7 @@ func (r *Raft) handleMsgAppendResp(m pb.Message) {
 			r.Prs[m.From].Next = m.Index + 1
 		}
 		if m.From == r.leadTransferee && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
-			// leader 切换完成
+			// 满足了 leader 切换的条件
 			r.sendTimeoutNow(m.From)
 		}
 		r.updateLogCommitted()
@@ -858,29 +857,14 @@ func (r *Raft) removeNode(id uint64) {
 
 // updateLogCommitted update leader`s log committed.
 func (r *Raft) updateLogCommitted() {
-	if len(r.Prs) == 0 {
-		return
-	}
-
-	matchIndexes, i := make([]uint64, len(r.Prs)), 0
+	var i int
+	matches := make([]uint64, len(r.Prs))
 	for _, p := range r.Prs {
-		matchIndexes[i] = p.Match
+		matches[i] = p.Match
 		i++
 	}
 
-	sort.Sort(uint64Slice(matchIndexes))
-	newCommitted := matchIndexes[len(r.Prs)/2]
-	if len(r.Prs)%2 == 0 {
-		newCommitted = matchIndexes[len(r.Prs)/2-1]
-	}
-	if newCommitted <= r.RaftLog.committed {
-		return
-	}
-
-	if term, err := r.RaftLog.Term(newCommitted); err != nil {
-		panic(err)
-	} else if term == r.Term {
-		r.RaftLog.committed = newCommitted
+	if r.RaftLog.updateCommitted(matches, len(r.Prs), r.Term) {
 		r.broadAppend()
 	}
 }

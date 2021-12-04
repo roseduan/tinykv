@@ -447,3 +447,8 @@ func (ps *PeerStorage) saveApplyState() {
 		log.Fatalf("write meta err.[%+v]", err)
 	}
 }
+
+func (ps *PeerStorage) saveRegionState() {
+	//epoch := ps.region.RegionEpoch
+	//epoch.ConfVer
+}

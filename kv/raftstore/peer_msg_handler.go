@@ -761,6 +761,11 @@ func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, ad
 			}
 			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
 		}
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+		id := adminRequest.TransferLeader.Peer.Id
+		d.RaftGroup.TransferLeader(id)
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+
 	}
 }
 
@@ -770,9 +775,14 @@ func (d *peerMsgHandler) handleConfChangeEntry(pro *proposal, ent eraftpb.Entry)
 
 	req := new(eraftpb.ConfChange)
 	if err := req.Unmarshal(ent.Data); err != nil {
-		
+		panic(err)
 	}
-	//d.RaftGroup.ApplyConfChange()
+
+	cc := eraftpb.ConfChange{
+		ChangeType: req.ChangeType,
+		NodeId:     req.NodeId,
+	}
+	d.RaftGroup.ApplyConfChange(cc)
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {

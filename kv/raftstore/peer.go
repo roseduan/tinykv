@@ -342,6 +342,14 @@ func (p *peer) Term() uint64 {
 	return p.RaftGroup.Raft.Term
 }
 
+func (p *peer) LogTerm(index uint64) uint64 {
+	term, err := p.RaftGroup.Raft.RaftLog.Term(index)
+	if err != nil {
+		panic(err)
+	}
+	return term
+}
+
 func (p *peer) HeartbeatScheduler(ch chan<- worker.Task) {
 	clonedRegion := new(metapb.Region)
 	err := util.CloneMsg(p.Region(), clonedRegion)

@@ -761,31 +761,32 @@ func (d *peerMsgHandler) handleNormalEntry(pro *proposal, ent eraftpb.Entry) {
 	}
 }
 
-func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, adminRequest *raft_cmdpb.AdminRequest) {
+func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, adminReq *raft_cmdpb.AdminRequest) {
 	resp.AdminResponse = &raft_cmdpb.AdminResponse{
-		CmdType: adminRequest.CmdType,
+		CmdType: adminReq.CmdType,
 	}
-	switch adminRequest.CmdType {
+	switch adminReq.CmdType {
 	case raft_cmdpb.AdminCmdType_CompactLog:
-		appliedIndex := d.peerStorage.applyState.AppliedIndex
-		if appliedIndex < adminRequest.CompactLog.CompactIndex {
-			term, err := d.RaftGroup.Raft.RaftLog.Term(appliedIndex)
-			if err != nil {
-				panic(err)
-			}
-			adminRequest.CompactLog.CompactIndex = appliedIndex
-			adminRequest.CompactLog.CompactTerm = term
-		}
 		resp.AdminResponse.CompactLog = &raft_cmdpb.CompactLogResponse{}
-		if d.peerStorage.applyState.TruncatedState.Index < adminRequest.CompactLog.CompactIndex {
+
+		appliedIndex := d.peerStorage.applyState.AppliedIndex
+		if appliedIndex < adminReq.CompactLog.CompactIndex {
+			term := d.LogTerm(appliedIndex)
+			adminReq.CompactLog.CompactIndex = appliedIndex
+			adminReq.CompactLog.CompactTerm = term
+		}
+
+		if d.peerStorage.applyState.TruncatedState.Index < adminReq.CompactLog.CompactIndex {
 			d.peerStorage.applyState.TruncatedState = &rspb.RaftTruncatedState{
-				Index: adminRequest.CompactLog.CompactIndex,
-				Term:  adminRequest.CompactLog.CompactTerm,
+				Index: adminReq.CompactLog.CompactIndex,
+				Term:  adminReq.CompactLog.CompactTerm,
 			}
-			d.ScheduleCompactLog(adminRequest.CompactLog.CompactIndex)
+			d.ScheduleCompactLog(adminReq.CompactLog.CompactIndex)
 		}
 	case raft_cmdpb.AdminCmdType_TransferLeader:
-		id := adminRequest.TransferLeader.Peer.Id
+		resp.AdminResponse.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+
+		id := adminReq.TransferLeader.Peer.Id
 		d.RaftGroup.TransferLeader(id)
 	}
 }

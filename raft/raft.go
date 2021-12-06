@@ -918,7 +918,6 @@ func (r *Raft) sendTransferLeader() {
 	r.msgs = append(r.msgs, msg)
 }
 
-// Avoid more than one conf change
 func (r *Raft) updatePengingConfIdx() {
 	r.PendingConfIndex = 0
 	if len(r.RaftLog.entries) == 0 {

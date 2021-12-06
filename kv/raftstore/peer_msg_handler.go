@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"github.com/pingcap-incubator/tinykv/raft"
@@ -71,7 +72,11 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	d.Send(d.ctx.trans, ready.Messages)
 
 	// 处理已经提交的日志，应用到状态机
-	d.handleCommittedEntries(&ready)
+	destoryed := d.applyCommittedEntries(&ready)
+	// 节点已经被移除，直接返回
+	if destoryed {
+		return
+	}
 
 	// 保存applyState状态
 	d.peerStorage.saveApplyState()
@@ -87,39 +92,42 @@ func (d *peerMsgHandler) updateSotreMeta(region *metapb.Region) {
 	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
 }
 
-func (d *peerMsgHandler) handleCommittedEntries(ready *raft.Ready) {
+func (d *peerMsgHandler) applyCommittedEntries(ready *raft.Ready) bool {
 	for _, ent := range ready.CommittedEntries {
 		d.peerStorage.applyState.AppliedIndex = ent.Index
 		if ent.Data == nil {
 			continue
 		}
 
-		lastPro := d.findLastPro(&ent)
+		matchedPro := d.findMatchedPro(&ent)
 		switch ent.EntryType {
 		case eraftpb.EntryType_EntryNormal:
-			d.handleNormalEntry(lastPro, ent)
+			d.handleNormalEntry(matchedPro, ent)
 		case eraftpb.EntryType_EntryConfChange:
-			d.handleConfChangeEntry(lastPro, ent)
+			if d.handleConfChangeEntry(matchedPro, ent) {
+				return true
+			}
 		default:
 			panic("unknown entry type")
 		}
 	}
+	return false
 }
 
-func (d *peerMsgHandler) findLastPro(ent *eraftpb.Entry) *proposal {
-	var lastPro *proposal
+func (d *peerMsgHandler) findMatchedPro(ent *eraftpb.Entry) *proposal {
+	var matchedPro *proposal
 	for i, pro := range d.proposals {
 		if ent.Index == pro.index {
 			if pro.term < d.Term() {
 				pro.cb.Done(ErrRespStaleCommand(d.Term()))
 			} else {
-				lastPro = pro
+				matchedPro = pro
 			}
 			d.proposals = d.proposals[i+1:]
 			break
 		}
 	}
-	return lastPro
+	return matchedPro
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -191,6 +199,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	buf, err := msg.Marshal()
+	if err != nil {
+		panic(fmt.Sprintf("raft msg marshal err.[%+v]", err))
+	}
 
 	// 记录消息的回调处理函数(在 HandleRaftReady 中进行处理)
 	d.proposals = append(d.proposals, &proposal{
@@ -198,13 +210,24 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		term:  d.Term(),
 		cb:    cb,
 	})
-	// 处理普通日志消息
-	buf, err := msg.Marshal()
-	if err != nil {
-		panic(fmt.Sprintf("raft msg marshal err.[%+v]", err))
-	}
-	if err = d.RaftGroup.Propose(buf); err != nil {
-		panic(fmt.Sprintf("raft proprose msg err.[%+v]", err))
+
+	// 配置变更消息
+	if msg.AdminRequest != nil && msg.AdminRequest.CmdType == raft_cmdpb.AdminCmdType_ChangePeer {
+		adminReq := msg.AdminRequest
+		req := adminReq.ChangePeer
+		cc := eraftpb.ConfChange{
+			ChangeType: req.ChangeType,
+			NodeId:     req.Peer.Id,
+			Context:    buf,
+		}
+		if err := d.RaftGroup.ProposeConfChange(cc); err != nil {
+			log.Fatalf("propose conf change err.[%+v]", err)
+		}
+	} else {
+		// 处理普通日志消息
+		if err = d.RaftGroup.Propose(buf); err != nil {
+			log.Fatalf("raft proprose msg err.[%+v]", err)
+		}
 	}
 }
 
@@ -764,25 +787,80 @@ func (d *peerMsgHandler) handleAdminRequest(resp *raft_cmdpb.RaftCmdResponse, ad
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		id := adminRequest.TransferLeader.Peer.Id
 		d.RaftGroup.TransferLeader(id)
-	case raft_cmdpb.AdminCmdType_ChangePeer:
-
 	}
 }
 
-func (d *peerMsgHandler) handleConfChangeEntry(pro *proposal, ent eraftpb.Entry) {
+func (d *peerMsgHandler) handleConfChangeEntry(pro *proposal, ent eraftpb.Entry) bool {
 	resp := newCmdResp()
 	BindRespTerm(resp, d.Term())
 
-	req := new(eraftpb.ConfChange)
-	if err := req.Unmarshal(ent.Data); err != nil {
+	// 解析数据
+	entData := new(eraftpb.ConfChange)
+	if err := entData.Unmarshal(ent.Data); err != nil {
+		panic(err)
+	}
+	msg := new(raft_cmdpb.RaftCmdRequest)
+	if err := msg.Unmarshal(entData.Context); err != nil {
 		panic(err)
 	}
 
-	cc := eraftpb.ConfChange{
-		ChangeType: req.ChangeType,
-		NodeId:     req.NodeId,
+	var (
+		removeSelf bool
+		region     = new(metapb.Region)
+		storeId    = msg.AdminRequest.ChangePeer.Peer.StoreId
+	)
+	_ = util.CloneMsg(d.Region(), region)
+
+	// 删除节点
+	if entData.ChangeType == eraftpb.ConfChangeType_RemoveNode {
+		if d.PeerId() == entData.NodeId {
+			removeSelf = true
+		}
+		util.RemovePeer(region, storeId)
+		d.removePeerCache(entData.NodeId)
 	}
-	d.RaftGroup.ApplyConfChange(cc)
+
+	// 添加节点
+	if entData.ChangeType == eraftpb.ConfChangeType_AddNode {
+		region.Peers = append(region.Peers, msg.AdminRequest.ChangePeer.Peer)
+	}
+
+	region.RegionEpoch.ConfVer++
+	peerState := rspb.PeerState_Normal
+	if removeSelf {
+		peerState = rspb.PeerState_Tombstone
+	}
+	kvwb := new(engine_util.WriteBatch)
+	meta.WriteRegionState(kvwb, region, peerState)
+	kvwb.MustWriteToDB(d.peerStorage.Engines.Kv)
+
+	// 发送配置变更数据到raft节点
+	d.RaftGroup.ApplyConfChange(*entData)
+
+	// 重新设置 region
+	d.SetRegion(region)
+
+	d.ctx.storeMeta.Lock()
+	d.ctx.storeMeta.regions[d.regionId] = region
+	d.ctx.storeMeta.Unlock()
+
+	// 添加返回值
+	resp.AdminResponse = &raft_cmdpb.AdminResponse{
+		CmdType: raft_cmdpb.AdminCmdType_ChangePeer,
+		ChangePeer: &raft_cmdpb.ChangePeerResponse{
+			Region: region,
+		},
+	}
+
+	if pro != nil {
+		pro.cb.Done(resp)
+	}
+
+	if removeSelf {
+		d.destroyPeer()
+		return true
+	}
+	return false
 }
 
 func newAdminRequest(regionID uint64, peer *metapb.Peer) *raft_cmdpb.RaftCmdRequest {

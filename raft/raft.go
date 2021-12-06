@@ -203,7 +203,7 @@ func newRaft(c *Config) *Raft {
 	}
 	raft.RaftLog = raftLog
 
-	//ret.updatePengingConfIdx() todo
+	raft.updatePengingConfIdx()
 	return raft
 }
 
@@ -407,8 +407,7 @@ func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
 	r.heartbeatElapsed = 0
-
-	//r.updatePengingConfIdx() todo
+	r.updatePengingConfIdx()
 
 	// 初始化各个节点的 Progress
 	for id := range r.Prs {
@@ -864,7 +863,7 @@ func (r *Raft) updateLogCommitted() {
 		i++
 	}
 
-	if r.RaftLog.updateCommitted(matches, len(r.Prs), r.Term) {
+	if r.RaftLog.updateLeaderCommitted(matches, len(r.Prs), r.Term) {
 		r.broadAppend()
 	}
 }
@@ -917,4 +916,21 @@ func (r *Raft) sendTransferLeader() {
 		To:      r.Lead,
 	}
 	r.msgs = append(r.msgs, msg)
+}
+
+// Avoid more than one conf change
+func (r *Raft) updatePengingConfIdx() {
+	r.PendingConfIndex = 0
+	if len(r.RaftLog.entries) == 0 {
+		return
+	}
+	if ents, err := r.RaftLog.Entries(r.RaftLog.applied+1, r.RaftLog.LastIndex()+1); err != nil {
+		panic(err.Error())
+	} else {
+		for _, ent := range ents {
+			if ent.EntryType == pb.EntryType_EntryConfChange {
+				r.PendingConfIndex = ent.Index
+			}
+		}
+	}
 }

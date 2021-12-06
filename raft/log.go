@@ -101,20 +101,24 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
-	first, err := l.storage.FirstIndex()
-	if err != nil {
-		panic(err.Error())
+	var (
+		firstIndex uint64
+		firstTerm  uint64
+		err        error
+	)
+	if firstIndex, err = l.storage.FirstIndex(); err != nil {
+		log.Fatal(err)
 	}
-	first--
+	firstIndex--
 
-	term, err := l.storage.Term(first)
-	if err != nil {
-		panic(err.Error())
-	}
-	if first > l.firstLogIndex {
-		l.entries = l.entries[first-l.firstLogIndex:]
-		l.firstLogIndex = first
-		l.firstLogTerm = term
+	if firstIndex > l.firstLogIndex {
+		l.entries = l.entries[firstIndex-l.firstLogIndex:]
+		l.firstLogIndex = firstIndex
+
+		if firstTerm, err = l.storage.Term(firstIndex); err != nil {
+			log.Fatal(err)
+		}
+		l.firstLogTerm = firstTerm
 	}
 }
 
@@ -179,10 +183,16 @@ func (l *RaftLog) LeaderAppendLogEntry(e *pb.Entry, term uint64) {
 
 // AppendLogEntry add new log entry.
 func (l *RaftLog) AppendLogEntry(m pb.Message) {
-	i, firstIndex, lastIndex, msgEntriesLen := uint64(0), m.Index+1, l.LastIndex(), uint64(len(m.Entries))
+	var (
+		i          uint64
+		firstIndex = m.Index + 1
+		lastIndex  = l.LastIndex()
+		entLen     = uint64(len(m.Entries))
+	)
+
 	if len(l.entries) > 0 {
 		offset := l.entries[0].Index
-		for ; i < msgEntriesLen && i+firstIndex <= lastIndex; i++ {
+		for ; i < entLen && i+firstIndex <= lastIndex; i++ {
 			logTerm, err := l.Term(i + firstIndex)
 			if err != nil {
 				panic(err)
@@ -295,10 +305,12 @@ func (l *RaftLog) AddSnapshot(sh *pb.Snapshot) {
 }
 
 func (l *RaftLog) advance(rd *Ready) {
+	// ready中的entry都是已经持久化的数据了
 	if len(rd.Entries) != 0 && l.stabled < rd.Entries[len(rd.Entries)-1].Index {
 		l.stabled = rd.Entries[len(rd.Entries)-1].Index
 	}
 
+	// committed的数据已经被应用到状态机
 	committedLen := len(rd.CommittedEntries)
 	if committedLen != 0 && l.applied < rd.CommittedEntries[committedLen-1].Index {
 		l.applied = rd.CommittedEntries[committedLen-1].Index
@@ -307,7 +319,7 @@ func (l *RaftLog) advance(rd *Ready) {
 	l.maybeCompact()
 }
 
-func (l *RaftLog) updateCommitted(matches []uint64, prLen int, rTerm uint64) (updated bool) {
+func (l *RaftLog) updateLeaderCommitted(matches []uint64, prLen int, rTerm uint64) (updated bool) {
 	sort.Sort(uint64Slice(matches))
 	newCommitted := matches[prLen/2]
 	if prLen%2 == 0 {

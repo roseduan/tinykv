@@ -317,20 +317,18 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 		panic(fmt.Sprintf("get peer first index err.[%+v]", err))
 	}
 
-	// no new entry.
-	if entries[0].Index+uint64(len(entries)-1) < firstIndex {
-		return nil
-	}
-	for _, ent := range entries {
-		raftLogKey := meta.RaftLogKey(ps.region.Id, ent.Index)
-		err := raftWB.SetMeta(raftLogKey, &ent)
-		if err != nil {
-			panic(fmt.Sprintf("set meta err.[%+v]", err))
+	if entries[0].Index+uint64(len(entries)-1) >= firstIndex {
+		for _, ent := range entries {
+			raftLogKey := meta.RaftLogKey(ps.region.Id, ent.Index)
+			err := raftWB.SetMeta(raftLogKey, &ent)
+			if err != nil {
+				panic(fmt.Sprintf("set meta err.[%+v]", err))
+			}
 		}
-	}
 
-	ps.raftState.LastIndex = entries[len(entries)-1].Index
-	ps.raftState.LastTerm = entries[len(entries)-1].Term
+		ps.raftState.LastIndex = entries[len(entries)-1].Index
+		ps.raftState.LastTerm = entries[len(entries)-1].Term
+	}
 	return nil
 }
 
@@ -388,16 +386,16 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-
 	var raftwb engine_util.WriteBatch
 	raftwb.Reset()
-	// 保存日志条目
-	if err := ps.Append(ready.Entries, &raftwb); err != nil {
-		return nil, err
-	}
+
 	// 更新hard state
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
+	}
+	// 保存日志条目
+	if err := ps.Append(ready.Entries, &raftwb); err != nil {
+		return nil, err
 	}
 
 	// 应用快照信息
@@ -446,9 +444,4 @@ func (ps *PeerStorage) saveApplyState() {
 	if err := kvwb.WriteToDB(ps.Engines.Kv); err != nil {
 		log.Fatalf("write meta err.[%+v]", err)
 	}
-}
-
-func (ps *PeerStorage) saveRegionState() {
-	//epoch := ps.region.RegionEpoch
-	//epoch.ConfVer
 }

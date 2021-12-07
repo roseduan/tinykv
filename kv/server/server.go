@@ -1,12 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
-
 	"github.com/pingcap-incubator/tinykv/kv/coprocessor"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
 	"github.com/pingcap-incubator/tinykv/kv/storage/raft_storage"
 	"github.com/pingcap-incubator/tinykv/kv/transaction/latches"
+	"github.com/pingcap-incubator/tinykv/kv/transaction/mvcc"
 	coppb "github.com/pingcap-incubator/tinykv/proto/pkg/coprocessor"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/tinykvpb"
@@ -48,14 +49,91 @@ func (server *Server) Snapshot(stream tinykvpb.TinyKv_SnapshotServer) error {
 }
 
 // Transactional API.
-func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (*kvrpcpb.GetResponse, error) {
+func (server *Server) KvGet(_ context.Context, req *kvrpcpb.GetRequest) (resp *kvrpcpb.GetResponse, err error) {
 	// Your Code Here (4B).
-	return nil, nil
+	resp = &kvrpcpb.GetResponse{}
+
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return resp, err
+	}
+	defer reader.Close()
+
+	// 先获取锁
+	txn := mvcc.NewMvccTxn(reader, req.Version)
+	lock, err := txn.GetLock(req.Key)
+	if err != nil {
+		return resp, err
+	}
+	if lock != nil && lock.Ts <= req.Version {
+		resp.Error = &kvrpcpb.KeyError{
+			Locked: &kvrpcpb.LockInfo{
+				PrimaryLock: lock.Primary,
+				LockVersion: lock.Ts,
+				LockTtl:     lock.Ttl,
+				Key:         req.Key,
+			},
+		}
+		return
+	}
+
+	// 没有冲突，获取 value
+	value, err := txn.GetValue(req.Key)
+	if err != nil {
+		return resp, err
+	}
+	resp.Value = value
+	return
 }
 
-func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (*kvrpcpb.PrewriteResponse, error) {
+func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest) (resp *kvrpcpb.PrewriteResponse, err error) {
 	// Your Code Here (4B).
-	return nil, nil
+	resp = &kvrpcpb.PrewriteResponse{}
+
+	getKind := func(op kvrpcpb.Op) mvcc.WriteKind {
+		switch op {
+		case kvrpcpb.Op_Put:
+			return mvcc.WriteKindPut
+		case kvrpcpb.Op_Del:
+			return mvcc.WriteKindDelete
+		case kvrpcpb.Op_Rollback:
+			return mvcc.WriteKindRollback
+		}
+		return -1
+	}
+
+	var k mvcc.WriteKind
+	for _, mut := range req.Mutations {
+		if bytes.Compare(mut.Key, req.PrimaryLock) == 0 {
+			k = getKind(mut.Op)
+		}
+	}
+	// 先加锁
+	lock := &mvcc.Lock{
+		Primary: req.PrimaryLock,
+		Ts:      req.StartVersion,
+		Ttl:     req.LockTtl,
+		Kind:    k,
+	}
+
+	reader, err := server.storage.Reader(req.Context)
+	if err != nil {
+		return resp, err
+	}
+	defer reader.Close()
+
+	// 加锁
+	txn := mvcc.NewMvccTxn(reader, req.StartVersion)
+	txn.PutLock(req.PrimaryLock, lock)
+
+	// 写数据
+	for _, mut := range req.Mutations {
+		txn.PutWrite(mut.Key, req.StartVersion, &mvcc.Write{
+			StartTS: req.StartVersion,
+			Kind:    getKind(mut.Op),
+		})
+	}
+	return
 }
 
 func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (*kvrpcpb.CommitResponse, error) {

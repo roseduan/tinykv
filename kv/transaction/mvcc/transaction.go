@@ -1,6 +1,7 @@
 package mvcc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 
@@ -89,23 +90,21 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	// Your Code Here (4A).
 	var startTs uint64
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
 
-	for iter.Seek(key); iter.Valid(); iter.Next() {
+	// 从 cf_write 中查找最近的 startTs
+	iter.Seek(EncodeKey(key, txn.StartTS))
+	if iter.Valid() {
 		item := iter.Item()
-		ts := decodeTimestamp(item.Key())
-		if ts <= txn.StartTS {
-			data, err := item.Value()
-			if err != nil {
-				return nil, err
-			}
-
-			write, err := ParseWrite(data)
-			if err != nil {
-				return nil, err
-			}
-			startTs = write.StartTS
-			break
+		data, err := item.Value()
+		if err != nil {
+			return nil, err
 		}
+		write, err := ParseWrite(data)
+		if err != nil {
+			return nil, err
+		}
+		startTs = write.StartTS
 	}
 
 	// 从 cf_default 中获取实际的 value
@@ -141,14 +140,68 @@ func (txn *MvccTxn) DeleteValue(key []byte) {
 // write's commit timestamp, or an error.
 func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
-	return nil, 0, nil
+	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
+
+	var (
+		write    *Write
+		commitTs uint64
+	)
+	for iter.Seek(EncodeKey(key, TsMax)); iter.Valid(); iter.Next() {
+		item := iter.Item()
+		data, err := item.Value()
+		if err != nil {
+			return nil, 0, err
+		}
+		w, err := ParseWrite(data)
+		if err != nil {
+			return nil, 0, err
+		}
+		if w.StartTS < txn.StartTS {
+			return nil, 0, nil
+		}
+		if w.StartTS == txn.StartTS {
+			write = w
+			commitTs = decodeTimestamp(item.Key())
+			break
+		}
+	}
+	return write, commitTs, nil
 }
 
 // MostRecentWrite finds the most recent write with the given key. It returns a Write from the DB and that
 // write's commit timestamp, or an error.
 func (txn *MvccTxn) MostRecentWrite(key []byte) (*Write, uint64, error) {
 	// Your Code Here (4A).
-	return nil, 0, nil
+	iter := txn.Reader.IterCF(engine_util.CfWrite)
+	defer iter.Close()
+
+	var (
+		write    *Write
+		commitTs uint64
+	)
+
+	iter.Seek(EncodeKey(key, TsMax))
+	if iter.Valid() {
+		item := iter.Item()
+		userKey := DecodeUserKey(item.Key())
+		if bytes.Compare(userKey, key) != 0 {
+			return nil, 0, nil
+		}
+
+		commitTs = decodeTimestamp(item.Key())
+
+		data, err := item.Value()
+		if err != nil {
+			return nil, 0, err
+		}
+		w, err := ParseWrite(data)
+		if err != nil {
+			return nil, 0, err
+		}
+		write = w
+	}
+	return write, commitTs, nil
 }
 
 // EncodeKey encodes a user key and appends an encoded timestamp to a key. Keys and timestamps are encoded so that

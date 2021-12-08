@@ -60,7 +60,11 @@ func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParseLock(data)
+	if len(data) != 0 {
+		return ParseLock(data)
+	} else {
+		return nil, nil
+	}
 }
 
 // PutLock adds a key/lock to this transaction.

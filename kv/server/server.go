@@ -157,6 +157,7 @@ func (server *Server) KvPrewrite(_ context.Context, req *kvrpcpb.PrewriteRequest
 			Ttl:     req.LockTtl,
 			Kind:    mvcc.WriteKindFromProto(mut.Op),
 		})
+
 		// 写入数据信息
 		if mut.Op == kvrpcpb.Op_Put {
 			txn.PutValue(mut.Key, mut.Value)
@@ -175,8 +176,14 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (r
 	// Your Code Here (4B).
 	resp = &kvrpcpb.CommitResponse{}
 
-	// 等待锁
-	server.Latches.WaitForLatches(req.Keys)
+	// 锁保护，避免多个client的竞争
+	if wg := server.Latches.AcquireLatches(req.Keys); wg != nil {
+		resp.Error = &kvrpcpb.KeyError{
+			Retryable: "please retry",
+		}
+		return
+	}
+	defer server.Latches.ReleaseLatches(req.Keys)
 
 	reader, err := server.storage.Reader(req.Context)
 	if err != nil {
@@ -192,18 +199,22 @@ func (server *Server) KvCommit(_ context.Context, req *kvrpcpb.CommitRequest) (r
 			log.Fatalf("get lock err: %+v", err)
 		}
 
-		if lock != nil && lock.Ts != req.StartVersion {
-			resp.Error = &kvrpcpb.KeyError{
-				Retryable: "please retry",
+		if lock == nil {
+			continue
+		}
+		if lock.Ts != req.StartVersion {
+			lockInfo := &kvrpcpb.LockInfo{
+				PrimaryLock: lock.Primary,
+				LockVersion: lock.Ts,
+				Key:         key,
+				LockTtl:     lock.Ttl,
 			}
-			return
+			resp.Error = &kvrpcpb.KeyError{Locked: lockInfo, Retryable: "please retry"}
+			continue
 		}
 
 		// 写入Write数据
-		w := &mvcc.Write{StartTS: req.StartVersion}
-		if lock != nil {
-			w.Kind = lock.Kind
-		}
+		w := &mvcc.Write{StartTS: req.StartVersion, Kind: lock.Kind}
 		txn.PutWrite(key, req.CommitVersion, w)
 
 		// 清除锁

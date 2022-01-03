@@ -279,7 +279,42 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
-
+	c.Lock()
+	defer c.Unlock()
+	// Check whether there is a region with the same Id in local storage
+	epoch := region.GetRegionEpoch()
+	if epoch == nil {
+		return nil
+	}
+	localRegion, _ := c.GetRegionByID(region.GetID())
+	if localRegion != nil {
+		// Heartbeats’ `conf_ver` and `version` is less than its, this heartbeat region is stale
+		localEpoch := localRegion.RegionEpoch
+		if epoch.ConfVer < localEpoch.ConfVer || epoch.Version < localEpoch.Version {
+			return errors.New("Stale Heartbeat")
+		}
+	} else {
+		// scan all regions that overlap with it. The heartbeats’ `conf_ver` and `version`
+		// should be greater or equal than all of them, or the region is stale.
+		overlaps, stale := c.ScanRegions(region.GetStartKey(), region.GetEndKey(), c.GetRegionCount()), false
+		for _, v := range overlaps {
+			localEpoch := v.GetRegionEpoch()
+			if epoch.ConfVer < localEpoch.ConfVer || epoch.Version < localEpoch.Version {
+				stale = true
+				break
+			}
+		}
+		if stale {
+			return errors.New("Stale Heartbeat")
+		}
+	}
+	// Update region tree and store status
+	c.core.PutRegion(region)
+	storeIds := region.GetStoreIds()
+	for id := range storeIds {
+		c.updateStoreStatusLocked(id)
+	}
+	return nil
 	return nil
 }
 

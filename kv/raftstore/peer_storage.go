@@ -364,15 +364,15 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		},
 	}
 
-	done := make(chan bool)
+	notifier := make(chan bool)
 	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: snapData.Region.Id,
-		Notifier: done,
+		Notifier: notifier,
 		SnapMeta: snapshot.Metadata,
 		StartKey: snapData.Region.StartKey,
 		EndKey:   snapData.Region.EndKey,
 	}
-	<-done
+	<-notifier
 
 	ps.snapState.StateType = snap.SnapState_Relax
 	ps.region = snapData.Region
@@ -444,4 +444,9 @@ func (ps *PeerStorage) saveApplyState() {
 	if err := kvwb.WriteToDB(ps.Engines.Kv); err != nil {
 		log.Fatalf("write meta err.[%+v]", err)
 	}
+}
+
+func (ps *PeerStorage) saveRegionLocalState(state *rspb.RegionLocalState, kvwb *engine_util.WriteBatch) {
+	_ = kvwb.SetMeta(meta.RegionStateKey(state.Region.Id), state)
+	kvwb.MustWriteToDB(ps.Engines.Kv)
 }
